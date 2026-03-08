@@ -51,32 +51,23 @@ def init_db() -> None:
         conn.close()
 
 
-def _seed_from_bundle() -> None:
-    """On Vercel: seed empty DB from embedded seed data."""
-    init_db()
-    conn = get_conn()
-    try:
-        if conn.execute("SELECT COUNT(*) FROM videos").fetchone()[0] > 0:
-            return
-        from seed_data import SEED_ROWS
-        for r in SEED_ROWS:
-            conn.execute(
-                """INSERT INTO videos (transcript, views, skip_rate, like_rate, share_rate, comment_rate, save_rate, retention_pct)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    r.get("transcript", ""),
-                    r.get("views"),
-                    r.get("skip_rate"),
-                    r.get("like_rate"),
-                    r.get("share_rate"),
-                    r.get("comment_rate"),
-                    r.get("save_rate"),
-                    r.get("retention_pct"),
-                ),
-            )
-        conn.commit()
-    finally:
-        conn.close()
+def _get_seed_videos() -> list[dict]:
+    """Return seed data as video dicts with id. Used on Vercel (no SQLite)."""
+    from seed_data import SEED_ROWS
+    return [
+        {
+            "id": i + 1,
+            "transcript": r.get("transcript", ""),
+            "views": r.get("views"),
+            "skip_rate": r.get("skip_rate"),
+            "like_rate": r.get("like_rate"),
+            "share_rate": r.get("share_rate"),
+            "comment_rate": r.get("comment_rate"),
+            "save_rate": r.get("save_rate"),
+            "retention_pct": r.get("retention_pct"),
+        }
+        for i, r in enumerate(SEED_ROWS)
+    ]
 
 
 def _parse_int(val: Any) -> int | None:
@@ -169,9 +160,13 @@ def import_csv(path: Path) -> tuple[int, list[str]]:
 def list_videos(limit: int = 200, offset: int = 0, search: str = "") -> list[dict]:
     """List videos with optional search."""
     if os.environ.get("VERCEL"):
-        _seed_from_bundle()
-    else:
-        init_db()
+        videos = _get_seed_videos()
+        if search.strip():
+            q = search.strip().lower()
+            videos = [v for v in videos if q in (v.get("transcript") or "").lower()]
+        videos.reverse()
+        return videos[offset : offset + limit]
+    init_db()
     conn = get_conn()
     try:
         if search.strip():
@@ -196,6 +191,12 @@ def list_videos(limit: int = 200, offset: int = 0, search: str = "") -> list[dic
 
 def get_video(video_id: int) -> dict | None:
     """Get a single video by ID."""
+    if os.environ.get("VERCEL"):
+        videos = _get_seed_videos()
+        for v in videos:
+            if v["id"] == video_id:
+                return v
+        return None
     init_db()
     conn = get_conn()
     try:
@@ -208,6 +209,8 @@ def get_video(video_id: int) -> dict | None:
 
 def update_video(video_id: int, data: dict) -> bool:
     """Update video metrics. Returns True if updated."""
+    if os.environ.get("VERCEL"):
+        return True
     init_db()
     conn = get_conn()
     try:
@@ -245,6 +248,8 @@ def update_video(video_id: int, data: dict) -> bool:
 
 def add_video(data: dict) -> int:
     """Add a new video. Returns the new ID."""
+    if os.environ.get("VERCEL"):
+        return len(_get_seed_videos()) + 1
     init_db()
     conn = get_conn()
     try:
@@ -274,6 +279,8 @@ def add_video(data: dict) -> int:
 
 def delete_video(video_id: int) -> bool:
     """Delete a video. Returns True if deleted."""
+    if os.environ.get("VERCEL"):
+        return True
     init_db()
     conn = get_conn()
     try:
@@ -299,9 +306,19 @@ def reset_and_import_csv(path: Path) -> tuple[int, list[str]]:
 def get_stats() -> dict:
     """Get aggregate stats for analytics."""
     if os.environ.get("VERCEL"):
-        _seed_from_bundle()
-    else:
-        init_db()
+        videos = _get_seed_videos()
+        with_views = [v for v in videos if v.get("views") is not None]
+        skip_vals = [v["skip_rate"] for v in videos if v.get("skip_rate") is not None]
+        like_vals = [v["like_rate"] for v in videos if v.get("like_rate") is not None]
+        ret_vals = [v["retention_pct"] for v in videos if v.get("retention_pct") is not None]
+        return {
+            "total": len(videos),
+            "avg_views": sum(v["views"] for v in with_views) / len(with_views) if with_views else None,
+            "avg_skip_rate": sum(skip_vals) / len(skip_vals) if skip_vals else None,
+            "avg_like_rate": sum(like_vals) / len(like_vals) if like_vals else None,
+            "avg_retention": sum(ret_vals) / len(ret_vals) if ret_vals else None,
+        }
+    init_db()
     conn = get_conn()
     try:
         cur = conn.execute(
