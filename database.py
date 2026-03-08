@@ -51,6 +51,38 @@ def init_db() -> None:
         conn.close()
 
 
+def _seed_from_bundle() -> None:
+    """On Vercel: seed empty DB from bundled seed_data.json."""
+    import json
+    init_db()
+    conn = get_conn()
+    try:
+        if conn.execute("SELECT COUNT(*) FROM videos").fetchone()[0] > 0:
+            return
+        seed_path = Path(__file__).parent / "seed_data.json"
+        if not seed_path.exists():
+            return
+        rows = json.loads(seed_path.read_text(encoding="utf-8"))
+        for r in rows:
+            conn.execute(
+                """INSERT INTO videos (transcript, views, skip_rate, like_rate, share_rate, comment_rate, save_rate, retention_pct)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    r.get("transcript", ""),
+                    r.get("views"),
+                    r.get("skip_rate"),
+                    r.get("like_rate"),
+                    r.get("share_rate"),
+                    r.get("comment_rate"),
+                    r.get("save_rate"),
+                    r.get("retention_pct"),
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _parse_int(val: Any) -> int | None:
     """Parse integer, handling commas (e.g. 5,084) and empty strings."""
     if val is None or val == "":
@@ -140,7 +172,10 @@ def import_csv(path: Path) -> tuple[int, list[str]]:
 
 def list_videos(limit: int = 200, offset: int = 0, search: str = "") -> list[dict]:
     """List videos with optional search."""
-    init_db()
+    if os.environ.get("VERCEL"):
+        _seed_from_bundle()
+    else:
+        init_db()
     conn = get_conn()
     try:
         if search.strip():
@@ -267,7 +302,10 @@ def reset_and_import_csv(path: Path) -> tuple[int, list[str]]:
 
 def get_stats() -> dict:
     """Get aggregate stats for analytics."""
-    init_db()
+    if os.environ.get("VERCEL"):
+        _seed_from_bundle()
+    else:
+        init_db()
     conn = get_conn()
     try:
         cur = conn.execute(
