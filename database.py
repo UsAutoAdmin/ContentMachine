@@ -52,18 +52,14 @@ def init_db() -> None:
 
 
 def _seed_from_bundle() -> None:
-    """On Vercel: seed empty DB from bundled seed_data.json."""
-    import json
+    """On Vercel: seed empty DB from embedded seed data."""
     init_db()
     conn = get_conn()
     try:
         if conn.execute("SELECT COUNT(*) FROM videos").fetchone()[0] > 0:
             return
-        seed_path = Path(__file__).parent / "seed_data.json"
-        if not seed_path.exists():
-            return
-        rows = json.loads(seed_path.read_text(encoding="utf-8"))
-        for r in rows:
+        from seed_data import SEED_ROWS
+        for r in SEED_ROWS:
             conn.execute(
                 """INSERT INTO videos (transcript, views, skip_rate, like_rate, share_rate, comment_rate, save_rate, retention_pct)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
