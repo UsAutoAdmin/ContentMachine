@@ -8,10 +8,16 @@ to inform future scripting.
 import csv
 import re
 import sqlite3
+import os
 from pathlib import Path
 from typing import Any
 
-DB_PATH = Path(__file__).parent / "contentmachine.db"
+# Use /tmp on Vercel (read-only filesystem); else project dir
+DB_PATH = (
+    Path("/tmp/contentmachine.db")
+    if os.environ.get("VERCEL")
+    else Path(__file__).parent / "contentmachine.db"
+)
 
 
 def get_conn() -> sqlite3.Connection:

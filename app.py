@@ -4,25 +4,17 @@ ContentMachine - Instagram Reel Transcription Tool
 Internal tool to paste an Instagram reel URL and get a transcription.
 """
 
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from database import (
-    add_video,
-    delete_video,
-    get_stats,
-    get_video,
-    import_csv,
-    list_videos,
-    reset_and_import_csv,
-    update_video,
-)
-from transcribe import transcribe_reel
-
 app = FastAPI(title="ContentMachine", description="Transcribe Instagram Reels")
+
+# Lazy imports for Vercel: heavy deps (faster-whisper, yt-dlp) loaded only when needed
+# so the app can start and serve Teleprompter/Performance pages
 
 # Serve static files if we add any
 static_dir = Path(__file__).parent / "static"
@@ -54,6 +46,13 @@ async def transcribe(url: str = Form(...), model_size: str = Form("base")):
     Transcribe an Instagram reel from its URL.
     Returns the transcription text.
     """
+    if os.environ.get("VERCEL"):
+        raise HTTPException(
+            status_code=503,
+            detail="Transcription requires FFmpeg and runs locally. Use the app on your machine.",
+        )
+    from transcribe import transcribe_reel
+
     if not url.strip():
         raise HTTPException(status_code=400, detail="URL is required")
 
@@ -91,11 +90,13 @@ async def transcribe(url: str = Form(...), model_size: str = Form("base")):
 # Performance database API
 @app.get("/api/videos")
 async def api_list_videos(limit: int = 200, offset: int = 0, search: str = ""):
+    from database import list_videos
     return {"videos": list_videos(limit=limit, offset=offset, search=search)}
 
 
 @app.get("/api/videos/{video_id:int}")
 async def api_get_video(video_id: int):
+    from database import get_video
     v = get_video(video_id)
     if not v:
         raise HTTPException(404, "Video not found")
@@ -104,6 +105,7 @@ async def api_get_video(video_id: int):
 
 @app.put("/api/videos/{video_id:int}")
 async def api_update_video(video_id: int, data: dict):
+    from database import get_video, update_video
     if not get_video(video_id):
         raise HTTPException(404, "Video not found")
     update_video(video_id, data)
@@ -112,12 +114,14 @@ async def api_update_video(video_id: int, data: dict):
 
 @app.post("/api/videos")
 async def api_add_video(data: dict):
+    from database import add_video
     vid = add_video(data)
     return {"id": vid, "ok": True}
 
 
 @app.delete("/api/videos/{video_id:int}")
 async def api_delete_video(video_id: int):
+    from database import delete_video
     if not delete_video(video_id):
         raise HTTPException(404, "Video not found")
     return {"ok": True}
@@ -125,11 +129,13 @@ async def api_delete_video(video_id: int):
 
 @app.get("/api/stats")
 async def api_stats():
+    from database import get_stats
     return get_stats()
 
 
 @app.post("/api/import")
 async def api_import_csv(file: UploadFile = File(...), replace: str = Form("false")):
+    from database import import_csv, reset_and_import_csv
     if not file.filename or not file.filename.lower().endswith(".csv"):
         raise HTTPException(400, "Please upload a CSV file")
     content = await file.read()
