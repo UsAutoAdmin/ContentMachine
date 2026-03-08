@@ -1037,6 +1037,8 @@ def get_performance_html() -> str:
             loadAll();
         }
 
+        function loadAll() { loadVideos(); loadStats(); }
+
         importBtn.addEventListener('click', () => fileInput.click());
         fileInput.addEventListener('change', async (e) => {
             const file = e.target.files?.[0];
