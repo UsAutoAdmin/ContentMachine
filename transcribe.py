@@ -164,6 +164,41 @@ def transcribe_audio(audio_path: Path, model_size: str = "base") -> str:
     return transcription.strip()
 
 
+def list_profile_reels(profile_url: str) -> list[dict]:
+    """
+    Extract reel URLs from an Instagram profile page using yt-dlp.
+    Returns list of dicts with 'url' and optionally 'title'.
+    """
+    ydl_opts = {
+        "extract_flat": True,
+        "quiet": True,
+        "no_warnings": True,
+    }
+    ffmpeg_path = _get_ffmpeg_location()
+    if ffmpeg_path:
+        ydl_opts["ffmpeg_location"] = ffmpeg_path
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(profile_url, download=False)
+    except Exception as e:
+        raise ValueError(f"Failed to fetch profile reels: {e}") from e
+
+    entries = info.get("entries") or []
+    reels = []
+    for entry in entries:
+        entry_url = entry.get("url") or entry.get("webpage_url")
+        if not entry_url:
+            continue
+        if not entry_url.startswith("http"):
+            entry_url = f"https://www.instagram.com/reel/{entry_url}/"
+        reels.append({
+            "url": entry_url,
+            "title": entry.get("title", ""),
+        })
+    return reels
+
+
 def transcribe_reel(url: str, model_size: str = "base") -> dict:
     """
     Full pipeline: download Instagram reel, transcribe, and extract insights.

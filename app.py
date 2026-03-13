@@ -4,11 +4,12 @@ ContentMachine - Instagram Reel Transcription Tool
 Internal tool to paste an Instagram reel URL and get a transcription.
 """
 
+import json
 import os
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(title="ContentMachine", description="Transcribe Instagram Reels")
@@ -131,6 +132,122 @@ async def api_delete_video(video_id: int):
 async def api_stats():
     from database import get_stats
     return get_stats()
+
+
+@app.get("/bulk", response_class=HTMLResponse)
+async def bulk_page():
+    """Serve the bulk transcribe page."""
+    return get_bulk_html()
+
+
+@app.get("/api/bulk-transcribe")
+async def bulk_transcribe(
+    profile_url: str,
+    model_size: str = "base",
+):
+    """
+    SSE endpoint: scrapes profile reels, transcribes each one, saves to DB,
+    and stops when a transcript matches an existing one in the performance DB.
+    """
+    if os.environ.get("VERCEL"):
+        raise HTTPException(
+            status_code=503,
+            detail="Bulk transcription requires FFmpeg and runs locally.",
+        )
+
+    from transcribe import list_profile_reels, transcribe_reel
+    from database import add_video, find_similar_transcript
+
+    valid_models = ["tiny", "base", "small", "medium", "large-v2", "large-v3"]
+    if model_size not in valid_models:
+        model_size = "base"
+
+    async def event_stream():
+        def send(data: dict) -> str:
+            return f"data: {json.dumps(data)}\n\n"
+
+        yield send({"type": "status", "message": "Fetching reels from profile..."})
+
+        try:
+            reels = list_profile_reels(profile_url.strip())
+        except ValueError as e:
+            yield send({"type": "error", "message": str(e)})
+            return
+
+        if not reels:
+            yield send({"type": "error", "message": "No reels found on this profile."})
+            return
+
+        yield send({
+            "type": "status",
+            "message": f"Found {len(reels)} reels. Starting transcription...",
+        })
+
+        transcribed_count = 0
+        for i, reel in enumerate(reels):
+            reel_url = reel["url"]
+            yield send({
+                "type": "progress",
+                "current": i + 1,
+                "total": len(reels),
+                "message": f"Transcribing reel {i + 1}/{len(reels)}...",
+                "url": reel_url,
+            })
+
+            try:
+                result = transcribe_reel(reel_url, model_size=model_size)
+            except Exception as e:
+                yield send({
+                    "type": "reel_error",
+                    "current": i + 1,
+                    "url": reel_url,
+                    "message": f"Failed to transcribe: {e}",
+                })
+                continue
+
+            transcript = result["transcription"]
+
+            match = find_similar_transcript(transcript)
+            if match:
+                yield send({
+                    "type": "duplicate",
+                    "current": i + 1,
+                    "url": reel_url,
+                    "transcript": transcript[:200],
+                    "similarity": round(match["similarity"] * 100, 1),
+                    "matched_id": match["video"]["id"],
+                    "message": (
+                        f"Matched existing video #{match['video']['id']} "
+                        f"({round(match['similarity'] * 100, 1)}% similar). Stopping."
+                    ),
+                })
+                break
+
+            video_data = {
+                "transcript": transcript,
+                "views": result.get("view_count"),
+            }
+            new_id = add_video(video_data)
+            transcribed_count += 1
+
+            yield send({
+                "type": "transcribed",
+                "current": i + 1,
+                "total": len(reels),
+                "url": reel_url,
+                "video_id": new_id,
+                "transcript": transcript[:200],
+                "views": result.get("view_count"),
+                "message": f"Saved as video #{new_id}",
+            })
+
+        yield send({
+            "type": "done",
+            "transcribed": transcribed_count,
+            "message": f"Bulk transcription complete. {transcribed_count} new videos added.",
+        })
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @app.post("/api/import")
@@ -305,6 +422,62 @@ def get_index_html() -> str:
             font-size: 0.875rem;
             color: var(--text-muted);
         }
+        .add-tracker {
+            margin-top: 1.5rem;
+            padding: 1.25rem;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            display: none;
+        }
+        .add-tracker.show { display: block; }
+        .add-tracker h3 {
+            font-size: 0.9rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            color: var(--text-muted);
+        }
+        .tracker-fields {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+        }
+        .tracker-fields label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-bottom: 0.2rem;
+            display: block;
+        }
+        .tracker-fields input {
+            width: 100%;
+            padding: 0.5rem 0.75rem;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text);
+            font-size: 0.85rem;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .tracker-fields input:focus { outline: none; border-color: var(--accent); }
+        .tracker-btn {
+            font-family: 'Outfit', sans-serif;
+            font-weight: 600;
+            padding: 0.6rem 1.25rem;
+            background: linear-gradient(135deg, #34d399, #10b981);
+            border: none;
+            border-radius: 8px;
+            color: white;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: transform 0.15s, box-shadow 0.15s;
+        }
+        .tracker-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 16px rgba(52,211,153,0.3); }
+        .tracker-msg {
+            margin-top: 0.5rem;
+            font-size: 0.8rem;
+            color: var(--success);
+        }
         .nav {
             position: fixed;
             top: 0;
@@ -334,6 +507,7 @@ def get_index_html() -> str:
         <a href="/" class="active">Transcribe</a>
         <a href="/teleprompter" class="">Teleprompter</a>
         <a href="/performance" class="">Performance</a>
+        <a href="/bulk" class="">Bulk Transcribe</a>
     </nav>
     <div class="container" style="margin-top: 4rem;">
         <h1>ContentMachine</h1>
@@ -357,6 +531,17 @@ def get_index_html() -> str:
         <div id="insights"></div>
         <div id="result"></div>
         <div id="status" class="status"></div>
+        <div class="add-tracker" id="tracker">
+            <h3>Add to Performance Tracker</h3>
+            <div class="tracker-fields">
+                <div><label>Views</label><input type="number" id="tViews" placeholder="e.g. 5000"></div>
+                <div><label>Skip Rate %</label><input type="number" step="0.01" id="tSkip" placeholder="e.g. 32.5"></div>
+                <div><label>Like Rate %</label><input type="number" step="0.01" id="tLike" placeholder="e.g. 3.5"></div>
+                <div><label>Retention %</label><input type="number" step="0.01" id="tRetention" placeholder="e.g. 35"></div>
+            </div>
+            <button class="tracker-btn" id="trackBtn">Save to Tracker</button>
+            <div class="tracker-msg" id="trackerMsg"></div>
+        </div>
     </div>
     <script>
         const form = document.getElementById('form');
@@ -364,6 +549,10 @@ def get_index_html() -> str:
         const insightsEl = document.getElementById('insights');
         const statusEl = document.getElementById('status');
         const submitBtn = document.getElementById('submit');
+        const tracker = document.getElementById('tracker');
+        const trackBtn = document.getElementById('trackBtn');
+        const trackerMsg = document.getElementById('trackerMsg');
+        let lastTranscription = '';
 
         function formatCount(v) {
             if (v == null) return '—';
@@ -403,6 +592,13 @@ def get_index_html() -> str:
                     resultEl.textContent = data.transcription;
                     resultEl.className = 'result success';
                     statusEl.textContent = 'Done.';
+                    lastTranscription = data.transcription;
+                    tracker.classList.add('show');
+                    trackerMsg.textContent = '';
+                    document.getElementById('tViews').value = '';
+                    document.getElementById('tSkip').value = '';
+                    document.getElementById('tLike').value = '';
+                    document.getElementById('tRetention').value = '';
                 } else {
                     resultEl.textContent = data.detail || 'Transcription failed';
                     resultEl.className = 'result error';
@@ -416,6 +612,41 @@ def get_index_html() -> str:
                 submitBtn.disabled = false;
             }
         });
+
+        trackBtn.addEventListener('click', async () => {
+            if (!lastTranscription) return;
+            trackBtn.disabled = true;
+            trackerMsg.textContent = 'Saving...';
+            try {
+                const payload = { transcript: lastTranscription };
+                const v = document.getElementById('tViews').value;
+                const s = document.getElementById('tSkip').value;
+                const l = document.getElementById('tLike').value;
+                const r = document.getElementById('tRetention').value;
+                if (v) payload.views = parseInt(v);
+                if (s) payload.skip_rate = parseFloat(s);
+                if (l) payload.like_rate = parseFloat(l);
+                if (r) payload.retention_pct = parseFloat(r);
+                const res = await fetch('/api/videos', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (data.ok) {
+                    trackerMsg.textContent = 'Saved to Performance Tracker (ID ' + data.id + ')';
+                    trackerMsg.style.color = 'var(--success, #34d399)';
+                } else {
+                    trackerMsg.textContent = 'Failed to save';
+                    trackerMsg.style.color = 'var(--error, #f87171)';
+                }
+            } catch (err) {
+                trackerMsg.textContent = 'Error: ' + err.message;
+                trackerMsg.style.color = 'var(--error, #f87171)';
+            } finally {
+                trackBtn.disabled = false;
+            }
+        });
     </script>
 </body>
 </html>"""
@@ -425,10 +656,13 @@ def get_nav_html(active: str) -> str:
     """Navigation links for ContentMachine."""
     transcribe_cls = 'active' if active == 'transcribe' else ''
     teleprompter_cls = 'active' if active == 'teleprompter' else ''
+    bulk_cls = 'active' if active == 'bulk' else ''
     return f'''
     <nav class="nav">
         <a href="/" class="{transcribe_cls}">Transcribe</a>
         <a href="/teleprompter" class="{teleprompter_cls}">Teleprompter</a>
+        <a href="/performance">Performance</a>
+        <a href="/bulk" class="{bulk_cls}">Bulk Transcribe</a>
     </nav>'''
 
 
@@ -602,6 +836,7 @@ def get_teleprompter_html() -> str:
         <a href="/" class="">Transcribe</a>
         <a href="/teleprompter" class="active">Teleprompter</a>
         <a href="/performance" class="">Performance</a>
+        <a href="/bulk" class="">Bulk Transcribe</a>
     </nav>
     <div class="teleprompter-layout">
         <aside class="editor-panel">
@@ -731,6 +966,409 @@ def get_teleprompter_html() -> str:
 </html>"""
 
 
+def get_bulk_html() -> str:
+    """Return the bulk transcribe page HTML."""
+    return """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ContentMachine - Bulk Transcribe</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0d0d0f;
+            --surface: #16161a;
+            --border: #2a2a2e;
+            --text: #e4e4e7;
+            --text-muted: #71717a;
+            --accent: #a78bfa;
+            --accent-hover: #c4b5fd;
+            --success: #34d399;
+            --error: #f87171;
+            --warning: #fbbf24;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Outfit', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+        }
+        .nav {
+            position: sticky;
+            top: 0;
+            display: flex;
+            gap: 0.5rem;
+            padding: 1rem 1.5rem;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            z-index: 10;
+        }
+        .nav a {
+            color: var(--text-muted);
+            text-decoration: none;
+            padding: 0.5rem 1rem;
+            border-radius: 8px;
+            font-weight: 500;
+            transition: color 0.2s, background 0.2s;
+        }
+        .nav a:hover { color: var(--text); background: rgba(167,139,250,0.1); }
+        .nav a.active { color: var(--accent); background: rgba(167,139,250,0.15); }
+
+        .page {
+            max-width: 720px;
+            margin: 0 auto;
+            padding: 2.5rem 1.5rem;
+        }
+        h1 {
+            font-size: 1.75rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(135deg, var(--accent), #c084fc);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .subtitle {
+            color: var(--text-muted);
+            font-size: 0.95rem;
+            margin-bottom: 2rem;
+            line-height: 1.5;
+        }
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            margin-bottom: 1.5rem;
+        }
+        label {
+            font-size: 0.875rem;
+            font-weight: 500;
+            color: var(--text-muted);
+        }
+        input[type="url"] {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.9rem;
+            padding: 0.875rem 1rem;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            color: var(--text);
+            transition: border-color 0.2s;
+        }
+        input[type="url"]:focus { outline: none; border-color: var(--accent); }
+        input[type="url"]::placeholder { color: var(--text-muted); opacity: 0.7; }
+        .row { display: flex; align-items: center; gap: 0.75rem; }
+        select {
+            font-family: 'Outfit', sans-serif;
+            padding: 0.5rem 0.75rem;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text);
+            font-size: 0.875rem;
+        }
+        button {
+            font-family: 'Outfit', sans-serif;
+            font-weight: 600;
+            padding: 0.875rem 1.5rem;
+            background: linear-gradient(135deg, var(--accent), #8b5cf6);
+            border: none;
+            border-radius: 10px;
+            color: white;
+            cursor: pointer;
+            transition: transform 0.15s, box-shadow 0.15s;
+        }
+        button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 20px rgba(167, 139, 250, 0.35);
+        }
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+        .stop-btn {
+            background: linear-gradient(135deg, var(--error), #dc2626);
+            margin-left: 0.75rem;
+        }
+        .stop-btn:hover { box-shadow: 0 4px 20px rgba(248, 113, 113, 0.35); }
+
+        .progress-area {
+            margin-top: 2rem;
+            display: none;
+        }
+        .progress-area.active { display: block; }
+        .progress-bar-container {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            overflow: hidden;
+            height: 8px;
+            margin-bottom: 1rem;
+        }
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent), #8b5cf6);
+            transition: width 0.3s ease;
+            width: 0%;
+        }
+        .progress-status {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+            margin-bottom: 1.5rem;
+        }
+
+        .log-container {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+        .log-entry {
+            padding: 0.85rem 1.1rem;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.85rem;
+            line-height: 1.5;
+            display: flex;
+            gap: 0.75rem;
+            align-items: flex-start;
+        }
+        .log-entry:last-child { border-bottom: none; }
+        .log-icon {
+            flex-shrink: 0;
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.7rem;
+            margin-top: 1px;
+        }
+        .log-icon.success { background: rgba(52,211,153,0.15); color: var(--success); }
+        .log-icon.error { background: rgba(248,113,113,0.15); color: var(--error); }
+        .log-icon.warning { background: rgba(251,191,36,0.15); color: var(--warning); }
+        .log-icon.info { background: rgba(167,139,250,0.15); color: var(--accent); }
+        .log-content { flex: 1; min-width: 0; }
+        .log-message { color: var(--text); }
+        .log-detail {
+            margin-top: 0.35rem;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.78rem;
+            color: var(--text-muted);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .log-detail.wrap {
+            white-space: normal;
+            word-break: break-word;
+        }
+
+        .summary-card {
+            margin-top: 1.5rem;
+            padding: 1.25rem;
+            background: var(--surface);
+            border: 1px solid rgba(52,211,153,0.3);
+            border-radius: 12px;
+            display: none;
+        }
+        .summary-card.active { display: block; }
+        .summary-card h3 {
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--success);
+            margin-bottom: 0.5rem;
+        }
+        .summary-card p {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+        }
+    </style>
+</head>
+<body>
+    <nav class="nav">
+        <a href="/">Transcribe</a>
+        <a href="/teleprompter">Teleprompter</a>
+        <a href="/performance">Performance</a>
+        <a href="/bulk" class="active">Bulk Transcribe</a>
+    </nav>
+
+    <div class="page">
+        <h1>Bulk Transcribe</h1>
+        <p class="subtitle">
+            Paste an Instagram profile link to transcribe all reels automatically.
+            Stops when it finds a reel that already exists in your Performance Tracker.
+        </p>
+
+        <div class="form-group">
+            <label for="profileUrl">Instagram Profile URL</label>
+            <input type="url" id="profileUrl" placeholder="https://www.instagram.com/username/" required>
+            <div class="row">
+                <label for="bulkModel">Model:</label>
+                <select id="bulkModel">
+                    <option value="tiny">Tiny (fastest)</option>
+                    <option value="base" selected>Base</option>
+                    <option value="small">Small</option>
+                    <option value="medium">Medium</option>
+                    <option value="large-v2">Large v2</option>
+                    <option value="large-v3">Large v3</option>
+                </select>
+            </div>
+            <div class="row">
+                <button id="startBtn">Start Bulk Transcribe</button>
+                <button id="stopBtn" class="stop-btn" style="display:none;">Stop</button>
+            </div>
+        </div>
+
+        <div class="progress-area" id="progressArea">
+            <div class="progress-bar-container">
+                <div class="progress-bar" id="progressBar"></div>
+            </div>
+            <div class="progress-status" id="progressStatus">Starting...</div>
+            <div class="log-container" id="logContainer"></div>
+        </div>
+
+        <div class="summary-card" id="summaryCard">
+            <h3 id="summaryTitle">Done</h3>
+            <p id="summaryText"></p>
+        </div>
+    </div>
+
+    <script>
+        const profileUrl = document.getElementById('profileUrl');
+        const bulkModel = document.getElementById('bulkModel');
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const progressArea = document.getElementById('progressArea');
+        const progressBar = document.getElementById('progressBar');
+        const progressStatus = document.getElementById('progressStatus');
+        const logContainer = document.getElementById('logContainer');
+        const summaryCard = document.getElementById('summaryCard');
+        const summaryTitle = document.getElementById('summaryTitle');
+        const summaryText = document.getElementById('summaryText');
+
+        let eventSource = null;
+
+        function addLog(icon, iconClass, message, detail) {
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            entry.innerHTML = `
+                <div class="log-icon ${iconClass}">${icon}</div>
+                <div class="log-content">
+                    <div class="log-message">${esc(message)}</div>
+                    ${detail ? '<div class="log-detail">' + esc(detail) + '</div>' : ''}
+                </div>
+            `;
+            logContainer.prepend(entry);
+        }
+
+        function esc(s) {
+            const d = document.createElement('div');
+            d.textContent = s || '';
+            return d.innerHTML;
+        }
+
+        function stopStream() {
+            if (eventSource) {
+                eventSource.close();
+                eventSource = null;
+            }
+            startBtn.disabled = false;
+            stopBtn.style.display = 'none';
+        }
+
+        startBtn.addEventListener('click', () => {
+            const url = profileUrl.value.trim();
+            if (!url) { profileUrl.focus(); return; }
+
+            startBtn.disabled = true;
+            stopBtn.style.display = '';
+            progressArea.classList.add('active');
+            summaryCard.classList.remove('active');
+            logContainer.innerHTML = '';
+            progressBar.style.width = '0%';
+            progressStatus.textContent = 'Starting...';
+
+            const model = bulkModel.value;
+            const qs = new URLSearchParams({ profile_url: url, model_size: model });
+            eventSource = new EventSource('/api/bulk-transcribe?' + qs.toString());
+
+            eventSource.onmessage = (e) => {
+                const d = JSON.parse(e.data);
+
+                switch (d.type) {
+                    case 'status':
+                        progressStatus.textContent = d.message;
+                        addLog('i', 'info', d.message);
+                        break;
+
+                    case 'progress':
+                        progressStatus.textContent = d.message;
+                        progressBar.style.width = ((d.current / d.total) * 100) + '%';
+                        break;
+
+                    case 'transcribed':
+                        progressBar.style.width = ((d.current / d.total) * 100) + '%';
+                        addLog('\\u2713', 'success',
+                            'Video #' + d.video_id + ' saved',
+                            d.transcript);
+                        break;
+
+                    case 'reel_error':
+                        addLog('!', 'error', 'Skipped reel ' + d.current, d.message);
+                        break;
+
+                    case 'duplicate':
+                        addLog('\\u25A0', 'warning',
+                            'Duplicate found (' + d.similarity + '% match with #' + d.matched_id + ')',
+                            d.transcript);
+                        progressBar.style.width = '100%';
+                        summaryCard.classList.add('active');
+                        summaryTitle.textContent = 'Stopped — Duplicate Found';
+                        summaryText.textContent = d.message;
+                        stopStream();
+                        break;
+
+                    case 'done':
+                        progressBar.style.width = '100%';
+                        summaryCard.classList.add('active');
+                        summaryTitle.textContent = 'Complete';
+                        summaryText.textContent = d.message;
+                        stopStream();
+                        break;
+
+                    case 'error':
+                        addLog('\\u2717', 'error', d.message);
+                        stopStream();
+                        break;
+                }
+            };
+
+            eventSource.onerror = () => {
+                addLog('\\u2717', 'error', 'Connection lost.');
+                stopStream();
+            };
+        });
+
+        stopBtn.addEventListener('click', () => {
+            addLog('\\u25A0', 'warning', 'Stopped by user.');
+            summaryCard.classList.add('active');
+            summaryTitle.textContent = 'Stopped';
+            summaryText.textContent = 'Bulk transcription was stopped manually.';
+            stopStream();
+        });
+    </script>
+</body>
+</html>"""
+
+
 def get_performance_html() -> str:
     """Return the performance database page HTML."""
     return """<!DOCTYPE html>
@@ -739,129 +1377,253 @@ def get_performance_html() -> str:
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ContentMachine - Performance DB</title>
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <style>
+        :root {
+            --bg: #f8fafc;
+            --surface: #ffffff;
+            --border: #e2e8f0;
+            --border-strong: #cbd5e1;
+            --text: #0f172a;
+            --text-secondary: #475569;
+            --text-muted: #94a3b8;
+            --accent: #3b82f6;
+            --accent-light: #eff6ff;
+            --accent-hover: #2563eb;
+            --danger: #ef4444;
+            --danger-light: #fef2f2;
+            --success: #10b981;
+            --row-hover: #f1f5f9;
+            --row-stripe: #f8fafc;
+            --header-bg: #f1f5f9;
+            --radius: 8px;
+            --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+            --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.07), 0 2px 4px -2px rgba(0,0,0,0.05);
+            --shadow-lg: 0 10px 25px -5px rgba(0,0,0,0.1), 0 8px 10px -6px rgba(0,0,0,0.05);
+        }
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
-            font-family: 'IBM Plex Sans', system-ui, sans-serif;
-            background: #f4f4f5;
-            color: #18181b;
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background: var(--bg);
+            color: var(--text);
             min-height: 100vh;
             font-size: 13px;
+            -webkit-font-smoothing: antialiased;
         }
         .nav {
-            display: flex; gap: 0.25rem; padding: 0.5rem 1rem;
-            background: #e4e4e7; border-bottom: 1px solid #d4d4d8;
+            display: flex; gap: 0.25rem; padding: 0.6rem 1.25rem;
+            background: var(--surface); border-bottom: 1px solid var(--border);
+            position: sticky; top: 0; z-index: 50;
+            box-shadow: var(--shadow-sm);
         }
         .nav a {
-            color: #52525b; text-decoration: none; padding: 0.35rem 0.75rem;
-            font-size: 12px; font-weight: 500;
+            color: var(--text-secondary); text-decoration: none; padding: 0.4rem 0.85rem;
+            font-size: 13px; font-weight: 500; border-radius: 6px;
+            transition: all 0.15s ease;
         }
-        .nav a:hover { color: #18181b; background: #d4d4d8; }
-        .nav a.active { color: #18181b; background: #fff; border: 1px solid #d4d4d8; }
-        .db-header {
-            background: #fff;
-            border-bottom: 1px solid #d4d4d8;
-            padding: 0.75rem 1rem;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            flex-wrap: wrap;
-            gap: 0.5rem;
+        .nav a:hover { color: var(--text); background: var(--header-bg); }
+        .nav a.active { color: var(--accent); background: var(--accent-light); font-weight: 600; }
+
+        .page-header {
+            padding: 1.25rem 1.5rem;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
         }
-        .db-header h1 { font-size: 14px; font-weight: 600; color: #3f3f46; }
-        .db-header .meta { font-size: 11px; color: #71717a; font-family: 'IBM Plex Mono', monospace; }
-        .toolbar { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
-        .toolbar input[type="search"] {
-            padding: 0.35rem 0.5rem;
-            border: 1px solid #d4d4d8;
-            font-size: 12px;
-            font-family: 'IBM Plex Mono', monospace;
-            width: 180px;
+        .page-header h1 {
+            font-size: 18px; font-weight: 700; color: var(--text);
+            margin-bottom: 0.15rem;
         }
-        .toolbar button {
-            padding: 0.35rem 0.6rem;
-            background: #e4e4e7;
-            border: 1px solid #d4d4d8;
-            font-size: 12px;
-            cursor: pointer;
-            font-family: inherit;
+        .page-header p { font-size: 12px; color: var(--text-muted); }
+
+        .stats-bar {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 1rem;
+            padding: 1rem 1.5rem;
         }
-        .toolbar button:hover { background: #d4d4d8; }
-        .table-wrap {
-            overflow-x: auto;
-            background: #fff;
-            margin: 0 1rem 1rem;
-            border: 1px solid #d4d4d8;
+        .stat-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 0.85rem 1rem;
+            box-shadow: var(--shadow-sm);
         }
+        .stat-card .stat-label {
+            font-size: 11px; font-weight: 500; color: var(--text-muted);
+            text-transform: uppercase; letter-spacing: 0.04em;
+            margin-bottom: 0.3rem;
+        }
+        .stat-card .stat-value {
+            font-size: 20px; font-weight: 700; color: var(--text);
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .stat-card .stat-unit {
+            font-size: 11px; font-weight: 500; color: var(--text-muted); margin-left: 2px;
+        }
+
+        .toolbar-row {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 0.75rem 1.5rem;
+            gap: 0.75rem; flex-wrap: wrap;
+        }
+        .toolbar-left { display: flex; align-items: center; gap: 0.5rem; }
+        .toolbar-right { display: flex; align-items: center; gap: 0.5rem; }
+        .search-input {
+            padding: 0.45rem 0.75rem 0.45rem 2rem;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-size: 13px; font-family: inherit;
+            width: 240px; background: var(--surface);
+            transition: border-color 0.15s;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='%2394a3b8' viewBox='0 0 16 16'%3E%3Cpath d='M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85zm-5.242.656a5 5 0 1 1 0-10 5 5 0 0 1 0 10z'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: 0.6rem center;
+        }
+        .search-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(59,130,246,0.1); }
+        .row-count {
+            font-size: 12px; color: var(--text-muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .btn {
+            display: inline-flex; align-items: center; gap: 0.35rem;
+            padding: 0.45rem 0.85rem;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-size: 12px; font-weight: 500; font-family: inherit;
+            cursor: pointer; background: var(--surface);
+            color: var(--text-secondary);
+            transition: all 0.15s ease;
+        }
+        .btn:hover { background: var(--header-bg); border-color: var(--border-strong); color: var(--text); }
+        .btn-primary {
+            background: var(--accent); color: #fff; border-color: var(--accent);
+        }
+        .btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: #fff; }
+        .replace-label {
+            font-size: 12px; color: var(--text-muted);
+            display: inline-flex; align-items: center; gap: 0.3rem; cursor: pointer;
+            user-select: none;
+        }
+        .replace-label input { accent-color: var(--accent); }
+
+        .table-container {
+            margin: 0 1.5rem 1.5rem;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            overflow: hidden;
+            box-shadow: var(--shadow-sm);
+        }
+        .table-scroll { overflow-x: auto; }
         table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 12px;
-            font-family: 'IBM Plex Mono', monospace;
+            width: 100%; border-collapse: collapse;
+            font-size: 13px;
         }
+        thead { position: sticky; top: 0; z-index: 5; }
         th {
             text-align: left;
-            padding: 0.4rem 0.6rem;
-            background: #f4f4f5;
-            border-bottom: 1px solid #d4d4d8;
-            font-weight: 600;
-            font-size: 11px;
-            text-transform: uppercase;
-            letter-spacing: 0.02em;
-            color: #52525b;
+            padding: 0.6rem 0.85rem;
+            background: var(--header-bg);
+            border-bottom: 2px solid var(--border);
+            font-weight: 600; font-size: 11px;
+            text-transform: uppercase; letter-spacing: 0.05em;
+            color: var(--text-secondary);
+            white-space: nowrap;
+            user-select: none;
         }
         td {
-            padding: 0.4rem 0.6rem;
-            border-bottom: 1px solid #e4e4e7;
+            padding: 0.55rem 0.85rem;
+            border-bottom: 1px solid var(--border);
             vertical-align: top;
         }
-        tr:hover td { background: #fafafa; }
-        tr.row-clickable { cursor: pointer; }
-        .col-id { width: 48px; text-align: right; color: #71717a; }
-        .col-views, .col-skip, .col-like, .col-retention { width: 72px; text-align: right; }
-        .col-transcript { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: #3f3f46; }
-        .null-val { color: #a1a1aa; }
-        .modal {
-            display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 100;
-            align-items: center; justify-content: center; padding: 1rem;
+        tbody tr { transition: background 0.1s ease; cursor: pointer; }
+        tbody tr:nth-child(even) { background: var(--row-stripe); }
+        tbody tr:hover { background: var(--row-hover); }
+        .col-id {
+            width: 50px; text-align: center; color: var(--text-muted);
+            font-family: 'JetBrains Mono', monospace; font-size: 12px;
         }
-        .modal.open { display: flex; }
-        .modal-content {
-            background: #fff;
-            border: 1px solid #d4d4d8;
-            max-width: 560px;
-            width: 100%;
-            max-height: 90vh;
-            overflow-y: auto;
-            padding: 1rem;
+        .col-num {
+            width: 90px; text-align: right;
+            font-family: 'JetBrains Mono', monospace; font-size: 12px;
         }
-        .modal-content h2 { margin-bottom: 0.75rem; font-size: 13px; font-weight: 600; }
-        .modal-content label { display: block; font-size: 11px; color: #71717a; margin-bottom: 0.2rem; }
-        .modal-content textarea {
-            width: 100%; min-height: 80px; padding: 0.5rem;
-            border: 1px solid #d4d4d8; font-family: 'IBM Plex Mono', monospace; font-size: 12px;
-            margin-bottom: 0.75rem;
+        .col-transcript {
+            min-width: 280px; max-width: 420px;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+            color: var(--text); font-size: 12px; line-height: 1.5;
         }
-        .modal-content input {
-            width: 100%; padding: 0.35rem 0.5rem;
-            border: 1px solid #d4d4d8; font-family: 'IBM Plex Mono', monospace; font-size: 12px;
-            margin-bottom: 0.75rem;
+        .null-val {
+            color: var(--text-muted); font-style: italic; font-size: 11px;
         }
-        .modal-content .row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem 1rem; }
-        .modal-content .actions { margin-top: 0.75rem; display: flex; gap: 0.5rem; }
-        .modal-content button {
-            padding: 0.35rem 0.6rem;
-            background: #e4e4e7;
-            border: 1px solid #d4d4d8;
-            font-size: 12px;
-            cursor: pointer;
-            font-family: inherit;
-        }
-        .modal-content button:hover { background: #d4d4d8; }
-        .modal-content button.danger { background: #fef2f2; border-color: #fecaca; color: #b91c1c; }
-        .modal-content button.danger:hover { background: #fee2e2; }
+
         .file-input { display: none; }
+
+        .modal-overlay {
+            display: none; position: fixed; inset: 0;
+            background: rgba(15,23,42,0.4); backdrop-filter: blur(4px);
+            z-index: 100; align-items: center; justify-content: center; padding: 1rem;
+        }
+        .modal-overlay.open { display: flex; }
+        .modal-box {
+            background: var(--surface);
+            border-radius: 12px;
+            max-width: 580px; width: 100%;
+            max-height: 90vh; overflow-y: auto;
+            box-shadow: var(--shadow-lg);
+            animation: modalIn 0.2s ease;
+        }
+        @keyframes modalIn { from { opacity:0; transform: translateY(8px) scale(0.98); } to { opacity:1; transform: none; } }
+        .modal-header {
+            padding: 1rem 1.25rem;
+            border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; justify-content: space-between;
+        }
+        .modal-header h2 { font-size: 15px; font-weight: 600; }
+        .modal-close {
+            width: 28px; height: 28px; border: none; background: none;
+            color: var(--text-muted); cursor: pointer; border-radius: 6px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 18px; transition: all 0.15s;
+        }
+        .modal-close:hover { background: var(--header-bg); color: var(--text); }
+        .modal-body { padding: 1.25rem; }
+        .modal-body label {
+            display: block; font-size: 11px; font-weight: 600;
+            color: var(--text-secondary); margin-bottom: 0.3rem;
+            text-transform: uppercase; letter-spacing: 0.04em;
+        }
+        .modal-body textarea {
+            width: 100%; min-height: 80px; padding: 0.55rem 0.75rem;
+            border: 1px solid var(--border); border-radius: 6px;
+            font-family: 'JetBrains Mono', monospace; font-size: 12px;
+            margin-bottom: 1rem; resize: vertical; line-height: 1.5;
+            transition: border-color 0.15s;
+        }
+        .modal-body textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(59,130,246,0.1); }
+        .modal-body .field-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.75rem; }
+        .modal-body .field-grid input {
+            width: 100%; padding: 0.45rem 0.65rem;
+            border: 1px solid var(--border); border-radius: 6px;
+            font-family: 'JetBrains Mono', monospace; font-size: 12px;
+            transition: border-color 0.15s;
+        }
+        .modal-body .field-grid input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(59,130,246,0.1); }
+        .modal-footer {
+            padding: 0.85rem 1.25rem;
+            border-top: 1px solid var(--border);
+            display: flex; gap: 0.5rem; justify-content: flex-end;
+        }
+        .modal-footer .btn-danger {
+            background: var(--danger-light); color: var(--danger);
+            border-color: #fecaca; margin-right: auto;
+        }
+        .modal-footer .btn-danger:hover { background: #fee2e2; }
+
+        @media (max-width: 640px) {
+            .stats-bar { grid-template-columns: repeat(2, 1fr); }
+            .toolbar-row { flex-direction: column; align-items: stretch; }
+            .search-input { width: 100%; }
+        }
     </style>
 </head>
 <body>
@@ -869,64 +1631,87 @@ def get_performance_html() -> str:
         <a href="/">Transcribe</a>
         <a href="/teleprompter">Teleprompter</a>
         <a href="/performance" class="active">Performance</a>
+        <a href="/bulk">Bulk Transcribe</a>
     </nav>
-    <div class="db-header">
-        <div>
-            <h1>videos</h1>
-            <span class="meta" id="tableMeta">—</span>
+
+    <div class="page-header">
+        <h1>Performance Tracker</h1>
+        <p>Historical video performance data</p>
+    </div>
+
+    <div class="stats-bar" id="statsBar">
+        <div class="stat-card"><div class="stat-label">Total Videos</div><div class="stat-value" id="statTotal">--</div></div>
+        <div class="stat-card"><div class="stat-label">Avg Views</div><div class="stat-value" id="statViews">--</div></div>
+        <div class="stat-card"><div class="stat-label">Avg Skip Rate</div><div class="stat-value" id="statSkip">--<span class="stat-unit">%</span></div></div>
+        <div class="stat-card"><div class="stat-label">Avg Retention</div><div class="stat-value" id="statRetention">--<span class="stat-unit">%</span></div></div>
+    </div>
+
+    <div class="toolbar-row">
+        <div class="toolbar-left">
+            <input type="search" class="search-input" id="search" placeholder="Search transcripts...">
+            <span class="row-count" id="rowCount"></span>
         </div>
-        <div class="toolbar">
-            <input type="search" id="search" placeholder="Search transcript">
-            <button id="importBtn">Import CSV</button>
-            <label style="font-size:11px;color:#71717a;display:inline-flex;align-items:center;gap:0.25rem;"><input type="checkbox" id="replaceCheck"> Replace all</label>
+        <div class="toolbar-right">
+            <button class="btn" id="importBtn">Import CSV</button>
+            <label class="replace-label"><input type="checkbox" id="replaceCheck"> Replace all</label>
             <input type="file" id="fileInput" class="file-input" accept=".csv">
-            <button id="addBtn">+ Insert</button>
+            <button class="btn btn-primary" id="addBtn">+ Add Video</button>
         </div>
     </div>
-    <div class="table-wrap">
-        <table>
-            <thead>
-                <tr>
-                    <th class="col-id">id</th>
-                    <th class="col-transcript">transcript</th>
-                    <th class="col-views">views</th>
-                    <th class="col-skip">skip_rate</th>
-                    <th class="col-like">like_rate</th>
-                    <th class="col-retention">retention_pct</th>
-                </tr>
-            </thead>
-            <tbody id="videoList"></tbody>
-        </table>
+
+    <div class="table-container">
+        <div class="table-scroll">
+            <table>
+                <thead>
+                    <tr>
+                        <th class="col-id">#</th>
+                        <th class="col-transcript">Transcript</th>
+                        <th class="col-num">Views</th>
+                        <th class="col-num">Skip %</th>
+                        <th class="col-num">Like %</th>
+                        <th class="col-num">Retention %</th>
+                    </tr>
+                </thead>
+                <tbody id="videoList"></tbody>
+            </table>
+        </div>
     </div>
-    <div class="modal" id="modal">
-        <div class="modal-content">
-            <h2 id="modalTitle">Edit Record</h2>
-            <input type="hidden" id="editId">
-            <label>transcript</label>
-            <textarea id="editTranscript"></textarea>
-            <div class="row">
-                <div><label>views</label><input type="number" id="editViews" placeholder="NULL"></div>
-                <div><label>skip_rate</label><input type="number" step="0.01" id="editSkipRate" placeholder="NULL"></div>
-                <div><label>like_rate</label><input type="number" step="0.01" id="editLikeRate" placeholder="NULL"></div>
-                <div><label>share_rate</label><input type="number" step="0.01" id="editShareRate" placeholder="NULL"></div>
-                <div><label>comment_rate</label><input type="number" step="0.01" id="editCommentRate" placeholder="NULL"></div>
-                <div><label>save_rate</label><input type="number" step="0.01" id="editSaveRate" placeholder="NULL"></div>
-                <div><label>retention_pct</label><input type="number" step="0.01" id="editRetention" placeholder="NULL"></div>
+
+    <div class="modal-overlay" id="modal">
+        <div class="modal-box">
+            <div class="modal-header">
+                <h2 id="modalTitle">Edit Record</h2>
+                <button class="modal-close" id="cancelBtn">&times;</button>
             </div>
-            <div class="actions">
-                <button id="saveBtn">UPDATE</button>
-                <button class="danger" id="deleteBtn">DELETE</button>
-                <button id="cancelBtn">Cancel</button>
+            <div class="modal-body">
+                <input type="hidden" id="editId">
+                <label>Transcript</label>
+                <textarea id="editTranscript" placeholder="Paste transcript..."></textarea>
+                <div class="field-grid">
+                    <div><label>Views</label><input type="number" id="editViews" placeholder="--"></div>
+                    <div><label>Skip Rate %</label><input type="number" step="0.01" id="editSkipRate" placeholder="--"></div>
+                    <div><label>Like Rate %</label><input type="number" step="0.01" id="editLikeRate" placeholder="--"></div>
+                    <div><label>Share Rate %</label><input type="number" step="0.01" id="editShareRate" placeholder="--"></div>
+                    <div><label>Comment Rate %</label><input type="number" step="0.01" id="editCommentRate" placeholder="--"></div>
+                    <div><label>Save Rate %</label><input type="number" step="0.01" id="editSaveRate" placeholder="--"></div>
+                    <div><label>Retention %</label><input type="number" step="0.01" id="editRetention" placeholder="--"></div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-danger" id="deleteBtn">Delete</button>
+                <button class="btn" id="cancelBtn2">Cancel</button>
+                <button class="btn btn-primary" id="saveBtn">Save</button>
             </div>
         </div>
     </div>
+
     <script>
         const searchEl = document.getElementById('search');
         const importBtn = document.getElementById('importBtn');
         const fileInput = document.getElementById('fileInput');
         const addBtn = document.getElementById('addBtn');
         const videoList = document.getElementById('videoList');
-        const tableMeta = document.getElementById('tableMeta');
+        const rowCount = document.getElementById('rowCount');
         const modal = document.getElementById('modal');
         const editId = document.getElementById('editId');
         const editTranscript = document.getElementById('editTranscript');
@@ -940,8 +1725,8 @@ def get_performance_html() -> str:
         const saveBtn = document.getElementById('saveBtn');
         const deleteBtn = document.getElementById('deleteBtn');
         const cancelBtn = document.getElementById('cancelBtn');
+        const cancelBtn2 = document.getElementById('cancelBtn2');
 
-        function fmt(v) { return v != null && v !== '' ? v : '—'; }
         function num(v) { return v != null && v !== '' ? Number(v) : null; }
 
         async function loadVideos() {
@@ -953,33 +1738,37 @@ def get_performance_html() -> str:
 
         async function loadStats() {
             const res = await fetch('/api/stats');
-            const data = await res.json();
-            const avgViews = data.avg_views ? Math.round(data.avg_views).toLocaleString() : 'NULL';
-            const avgSkip = data.avg_skip_rate != null ? data.avg_skip_rate.toFixed(1) : 'NULL';
-            const avgLike = data.avg_like_rate != null ? data.avg_like_rate.toFixed(2) : 'NULL';
-            const avgRet = data.avg_retention != null ? data.avg_retention.toFixed(1) : 'NULL';
-            tableMeta.textContent = `${fmt(data.total)} rows | AVG(views)=${avgViews} AVG(skip_rate)=${avgSkip} AVG(like_rate)=${avgLike} AVG(retention_pct)=${avgRet}`;
+            const d = await res.json();
+            document.getElementById('statTotal').textContent = d.total != null ? d.total.toLocaleString() : '--';
+            document.getElementById('statViews').textContent = d.avg_views != null ? Math.round(d.avg_views).toLocaleString() : '--';
+            const skipEl = document.getElementById('statSkip');
+            skipEl.innerHTML = d.avg_skip_rate != null ? d.avg_skip_rate.toFixed(1) + '<span class="stat-unit">%</span>' : '--';
+            const retEl = document.getElementById('statRetention');
+            retEl.innerHTML = d.avg_retention != null ? d.avg_retention.toFixed(1) + '<span class="stat-unit">%</span>' : '--';
         }
 
         function esc(s) { return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
-        function cell(val, cls) {
-            if (val == null || val === '') return '<td class="null-val">NULL</td>';
-            return '<td' + (cls ? ' class="' + cls + '"' : '') + '>' + esc(String(val)) + '</td>';
+
+        function numCell(val) {
+            if (val == null || val === '') return '<td class="col-num null-val">--</td>';
+            return '<td class="col-num">' + esc(String(val)) + '</td>';
         }
 
         function renderVideos(videos) {
+            rowCount.textContent = videos.length + ' row' + (videos.length !== 1 ? 's' : '');
             videoList.innerHTML = videos.map(v => {
                 const t = v.transcript || '';
-                return `<tr class="row-clickable" data-id="${v.id}">
-                    <td class="col-id">${v.id}</td>
-                    <td class="col-transcript">${esc(t.slice(0, 80))}${t.length > 80 ? '…' : ''}</td>
-                    ${cell(v.views != null ? Number(v.views).toLocaleString() : null, 'col-views')}
-                    ${cell(v.skip_rate != null ? v.skip_rate : null, 'col-skip')}
-                    ${cell(v.like_rate != null ? v.like_rate : null, 'col-like')}
-                    ${cell(v.retention_pct != null ? v.retention_pct : null, 'col-retention')}
-                </tr>`;
+                const viewsStr = v.views != null ? Number(v.views).toLocaleString() : null;
+                return '<tr data-id="' + v.id + '">'
+                    + '<td class="col-id">' + v.id + '</td>'
+                    + '<td class="col-transcript">' + esc(t.slice(0, 100)) + (t.length > 100 ? '...' : '') + '</td>'
+                    + numCell(viewsStr)
+                    + numCell(v.skip_rate)
+                    + numCell(v.like_rate)
+                    + numCell(v.retention_pct)
+                    + '</tr>';
             }).join('');
-            videoList.querySelectorAll('.row-clickable').forEach(row => {
+            videoList.querySelectorAll('tr').forEach(row => {
                 row.addEventListener('click', () => openEdit(parseInt(row.dataset.id)));
             });
         }
@@ -988,7 +1777,7 @@ def get_performance_html() -> str:
             if (id) {
                 fetch('/api/videos/' + id).then(r => r.json()).then(v => {
                     editId.value = v.id;
-                    document.getElementById('modalTitle').textContent = 'Edit id=' + v.id;
+                    document.getElementById('modalTitle').textContent = 'Edit Video #' + v.id;
                     editTranscript.value = v.transcript || '';
                     editViews.value = v.views ?? '';
                     editSkipRate.value = v.skip_rate ?? '';
@@ -997,17 +1786,19 @@ def get_performance_html() -> str:
                     editCommentRate.value = v.comment_rate ?? '';
                     editSaveRate.value = v.save_rate ?? '';
                     editRetention.value = v.retention_pct ?? '';
-                    deleteBtn.style.display = 'inline-block';
+                    deleteBtn.style.display = '';
                     modal.classList.add('open');
                 });
             } else {
                 editId.value = '';
-                document.getElementById('modalTitle').textContent = 'Insert';
+                document.getElementById('modalTitle').textContent = 'Add Video';
                 editTranscript.value = editViews.value = editSkipRate.value = editLikeRate.value = editShareRate.value = editCommentRate.value = editSaveRate.value = editRetention.value = '';
                 deleteBtn.style.display = 'none';
                 modal.classList.add('open');
             }
         }
+
+        function closeModal() { modal.classList.remove('open'); }
 
         async function saveVideo() {
             const id = editId.value;
@@ -1026,14 +1817,14 @@ def get_performance_html() -> str:
             } else {
                 await fetch('/api/videos', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
             }
-            modal.classList.remove('open');
+            closeModal();
             loadAll();
         }
 
         async function deleteVideo() {
             if (!confirm('Delete this record?')) return;
             await fetch('/api/videos/' + editId.value, { method: 'DELETE' });
-            modal.classList.remove('open');
+            closeModal();
             loadAll();
         }
 
@@ -1056,7 +1847,9 @@ def get_performance_html() -> str:
         addBtn.addEventListener('click', () => openEdit(null));
         saveBtn.addEventListener('click', saveVideo);
         deleteBtn.addEventListener('click', deleteVideo);
-        cancelBtn.addEventListener('click', () => modal.classList.remove('open'));
+        cancelBtn.addEventListener('click', closeModal);
+        cancelBtn2.addEventListener('click', closeModal);
+        modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
         searchEl.addEventListener('input', () => { clearTimeout(window._searchT); window._searchT = setTimeout(loadVideos, 300); });
 
         loadAll();

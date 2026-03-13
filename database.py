@@ -9,6 +9,7 @@ import csv
 import re
 import sqlite3
 import os
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
@@ -301,6 +302,41 @@ def reset_and_import_csv(path: Path) -> tuple[int, list[str]]:
     finally:
         conn.close()
     return import_csv(path)
+
+
+def find_similar_transcript(transcript: str, threshold: float = 0.85) -> dict | None:
+    """
+    Check if a similar transcript already exists in the database.
+    Uses SequenceMatcher for fuzzy comparison. Returns the matching video
+    dict if similarity >= threshold, else None.
+    """
+    if not transcript or not transcript.strip():
+        return None
+
+    transcript_clean = _normalize_for_comparison(transcript)
+    if not transcript_clean:
+        return None
+
+    all_videos = list_videos(limit=10000)
+    for video in all_videos:
+        existing = video.get("transcript", "")
+        if not existing:
+            continue
+        existing_clean = _normalize_for_comparison(existing)
+        if not existing_clean:
+            continue
+        ratio = SequenceMatcher(None, transcript_clean, existing_clean).ratio()
+        if ratio >= threshold:
+            return {"video": video, "similarity": ratio}
+    return None
+
+
+def _normalize_for_comparison(text: str) -> str:
+    """Lowercase, collapse whitespace, strip punctuation for fuzzy compare."""
+    text = text.lower().strip()
+    text = re.sub(r"[^\w\s]", "", text)
+    text = re.sub(r"\s+", " ", text)
+    return text
 
 
 def get_stats() -> dict:
