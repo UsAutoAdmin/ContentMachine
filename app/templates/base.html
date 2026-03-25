@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}ContentMachine{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/app.css">
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">CM</div>
+        <div>
+          <div class="brand-title">ContentMachine</div>
+          <div class="brand-subtitle">Part Scout ops console</div>
+        </div>
+      </div>
+      <nav class="nav">
+        <a href="/" class="nav-link">Command</a>
+        <a href="/content-lab" class="nav-link">Content Lab</a>
+        <a href="/performance" class="nav-link">Performance</a>
+        <a href="/teleprompter" class="nav-link">Teleprompter</a>
+        <a href="/bulk" class="nav-link">Bulk Transcribe</a>
+      </nav>
+      <div class="sidebar-card">
+        <div class="sidebar-label">North star</div>
+        <p>Turn ContentMachine into the fastest way to think, communicate, and operate around Part Scout.</p>
+      </div>
+    </aside>
+    <main class="main">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,60 @@
+{% extends 'base.html' %}
+{% block title %}ContentMachine Command{% endblock %}
+{% block content %}
+<section class="hero">
+  <div>
+    <div class="eyebrow">Front and center</div>
+    <h1>Talk to Chud from inside the dashboard.</h1>
+    <p class="hero-copy">This becomes the main communication surface for strategy, planning, content operations, and eventually Part Scout workflow orchestration.</p>
+  </div>
+  <div class="hero-panel">
+    <div class="hero-stat"><span>Status</span><strong>Rebuild in progress</strong></div>
+    <div class="hero-stat"><span>Mode</span><strong>Operator console</strong></div>
+    <div class="hero-stat"><span>Priority</span><strong>Communication-first home</strong></div>
+  </div>
+</section>
+
+<section class="grid two-up">
+  <div class="card chat-card">
+    <div class="card-header">
+      <h2>Chud Console</h2>
+      <p>Your main entry point for working with me from here instead of the terminal.</p>
+    </div>
+    <div id="chatLog" class="chat-log">
+      <div class="message assistant">
+        <div class="message-role">Chud</div>
+        <div class="message-body">I’m here. Use this space as the operating console. Right now it’s a local command journal and communication surface while I rebuild the rest of the product around it.</div>
+      </div>
+    </div>
+    <form id="chatForm" class="chat-form">
+      <textarea id="chatInput" placeholder="Tell Chud what to work on next..." rows="4"></textarea>
+      <div class="chat-actions">
+        <div class="muted">Phase 1 behavior: local communication console. Phase 2 can wire this into real agent messaging.</div>
+        <button type="submit" class="btn btn-primary">Send</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <h2>Operating lanes</h2>
+      <p>The shape of the product from here forward.</p>
+    </div>
+    <div class="lane-list">
+      <div class="lane"><strong>Content Lab</strong><span>Research, transcription, ideation, scripting</span></div>
+      <div class="lane"><strong>Performance</strong><span>Video intelligence and analytics</span></div>
+      <div class="lane"><strong>Inbox</strong><span>Future email and comms monitoring lane</span></div>
+      <div class="lane"><strong>Customer Success</strong><span>Future support and issue-management lane</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="grid three-up">
+  <div class="card mini-card"><h3>What changed</h3><p>New app shell, modular backend, communication-first home page.</p></div>
+  <div class="card mini-card"><h3>What stays</h3><p>Transcription, teleprompter, performance tracking, bulk workflows.</p></div>
+  <div class="card mini-card"><h3>What comes next</h3><p>Real command routing, richer dashboard state, inbox and CS foundations.</p></div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/dashboard.js"></script>
+{% endblock %}

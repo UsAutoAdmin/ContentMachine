@@ -1,0 +1,66 @@
+{% extends 'base.html' %}
+{% block title %}Performance{% endblock %}
+{% block content %}
+<section class="page-header">
+  <div>
+    <div class="eyebrow">Performance</div>
+    <h1>Track what performs and why.</h1>
+    <p>The existing performance tracker, moved into the new shell.</p>
+  </div>
+</section>
+
+<section class="stats-grid">
+  <div class="card stat-card"><span>Total videos</span><strong id="statTotal">--</strong></div>
+  <div class="card stat-card"><span>Avg views</span><strong id="statViews">--</strong></div>
+  <div class="card stat-card"><span>Avg skip rate</span><strong id="statSkip">--</strong></div>
+  <div class="card stat-card"><span>Avg retention</span><strong id="statRetention">--</strong></div>
+</section>
+
+<section class="card">
+  <div class="toolbar-row">
+    <input type="search" id="search" class="search-input" placeholder="Search transcripts...">
+    <div class="toolbar-actions">
+      <button class="btn" id="importBtn">Import CSV</button>
+      <label class="check-inline"><input type="checkbox" id="replaceCheck"> Replace all</label>
+      <input type="file" id="fileInput" class="hidden" accept=".csv">
+      <button class="btn btn-primary" id="addBtn">Add Video</button>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>#</th><th>Transcript</th><th>Views</th><th>Skip %</th><th>Like %</th><th>Retention %</th></tr>
+      </thead>
+      <tbody id="videoList"></tbody>
+    </table>
+  </div>
+</section>
+
+<div class="modal-overlay" id="modal">
+  <div class="modal-box">
+    <div class="card-header"><h2 id="modalTitle">Edit Record</h2></div>
+    <div class="stack-form modal-body">
+      <input type="hidden" id="editId">
+      <label>Transcript</label>
+      <textarea id="editTranscript" rows="5"></textarea>
+      <div class="field-grid">
+        <input type="number" id="editViews" placeholder="Views">
+        <input type="number" step="0.01" id="editSkipRate" placeholder="Skip Rate %">
+        <input type="number" step="0.01" id="editLikeRate" placeholder="Like Rate %">
+        <input type="number" step="0.01" id="editShareRate" placeholder="Share Rate %">
+        <input type="number" step="0.01" id="editCommentRate" placeholder="Comment Rate %">
+        <input type="number" step="0.01" id="editSaveRate" placeholder="Save Rate %">
+        <input type="number" step="0.01" id="editRetention" placeholder="Retention %">
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-danger" id="deleteBtn">Delete</button>
+        <button class="btn" id="cancelBtn">Cancel</button>
+        <button class="btn btn-primary" id="saveBtn">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/performance.js"></script>
+{% endblock %}

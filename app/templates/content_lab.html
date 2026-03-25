@@ -1,0 +1,38 @@
+{% extends 'base.html' %}
+{% block title %}Content Lab{% endblock %}
+{% block content %}
+<section class="page-header">
+  <div>
+    <div class="eyebrow">Content Lab</div>
+    <h1>Transcribe reels and capture useful signal.</h1>
+    <p>Keep the strongest existing workflow, but put it inside a cleaner shell.</p>
+  </div>
+</section>
+
+<section class="card form-card">
+  <div class="card-header">
+    <h2>Reel transcription</h2>
+    <p>Paste an Instagram reel URL, transcribe it locally, and optionally save it into Performance.</p>
+  </div>
+  <form id="transcribeForm" class="stack-form">
+    <label>Instagram Reel URL</label>
+    <input type="url" id="url" placeholder="https://www.instagram.com/reel/..." required>
+    <label>Model</label>
+    <select id="model">
+      <option value="tiny">Tiny</option>
+      <option value="base" selected>Base</option>
+      <option value="small">Small</option>
+      <option value="medium">Medium</option>
+      <option value="large-v2">Large v2</option>
+      <option value="large-v3">Large v3</option>
+    </select>
+    <button type="submit" class="btn btn-primary" id="submitBtn">Transcribe</button>
+  </form>
+  <div id="transcribeStatus" class="status-line"></div>
+  <div id="insights" class="insight-row"></div>
+  <pre id="transcribeResult" class="result-box hidden"></pre>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/content_lab.js"></script>
+{% endblock %}

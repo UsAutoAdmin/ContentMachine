@@ -1,0 +1,34 @@
+{% extends 'base.html' %}
+{% block title %}Bulk Transcribe{% endblock %}
+{% block content %}
+<section class="page-header">
+  <div>
+    <div class="eyebrow">Bulk Transcribe</div>
+    <h1>Process a profile and stop when you hit known territory.</h1>
+    <p>Keep the existing bulk workflow, but make the experience cleaner.</p>
+  </div>
+</section>
+<section class="card form-card">
+  <form id="bulkForm" class="stack-form">
+    <label>Instagram Profile URL</label>
+    <input type="url" id="profileUrl" placeholder="https://www.instagram.com/yourprofile/" required>
+    <label>Model</label>
+    <select id="bulkModel">
+      <option value="tiny">Tiny</option>
+      <option value="base" selected>Base</option>
+      <option value="small">Small</option>
+      <option value="medium">Medium</option>
+      <option value="large-v2">Large v2</option>
+      <option value="large-v3">Large v3</option>
+    </select>
+    <div class="toolbar-actions">
+      <button type="submit" class="btn btn-primary">Start</button>
+      <button type="button" class="btn" id="stopBulk">Stop</button>
+    </div>
+  </form>
+  <div id="bulkLog" class="bulk-log"></div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/bulk.js"></script>
+{% endblock %}

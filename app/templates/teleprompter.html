@@ -1,0 +1,23 @@
+{% extends 'base.html' %}
+{% block title %}Teleprompter{% endblock %}
+{% block content %}
+<section class="page-header">
+  <div>
+    <div class="eyebrow">Teleprompter</div>
+    <h1>Read clearly. Move with intention.</h1>
+    <p>A lightweight teleprompter remains available during the rebuild.</p>
+  </div>
+</section>
+<section class="card teleprompter-shell">
+  <textarea id="teleprompterText" class="teleprompter-input" placeholder="Paste or write your script here..."></textarea>
+  <div class="teleprompter-controls">
+    <label>Speed <input type="range" id="speed" min="1" max="100" value="30"></label>
+    <button id="startTeleprompter" class="btn btn-primary">Start</button>
+    <button id="stopTeleprompter" class="btn">Stop</button>
+  </div>
+  <div id="teleprompterDisplay" class="teleprompter-display"></div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/teleprompter.js"></script>
+{% endblock %}
