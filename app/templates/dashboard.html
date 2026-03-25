@@ -20,16 +20,11 @@
       <h2>Chud Console</h2>
       <p>Your main entry point for working with me from here instead of the terminal.</p>
     </div>
-    <div id="chatLog" class="chat-log">
-      <div class="message assistant">
-        <div class="message-role">Chud</div>
-        <div class="message-body">I’m here. Use this space as the operating console. Right now it’s a local command journal and communication surface while I rebuild the rest of the product around it.</div>
-      </div>
-    </div>
+    <div id="chatLog" class="chat-log"></div>
     <form id="chatForm" class="chat-form">
       <textarea id="chatInput" placeholder="Tell Chud what to work on next..." rows="4"></textarea>
       <div class="chat-actions">
-        <div class="muted">Phase 1 behavior: local communication console. Phase 2 can wire this into real agent messaging.</div>
+        <div class="muted">Now backed by a persistent local command state with task tracking and history.</div>
         <button type="submit" class="btn btn-primary">Send</button>
       </div>
     </form>
@@ -45,6 +40,27 @@
       <div class="lane"><strong>Performance</strong><span>Video intelligence and analytics</span></div>
       <div class="lane"><strong>Inbox</strong><span>Future email and comms monitoring lane</span></div>
       <div class="lane"><strong>Customer Success</strong><span>Future support and issue-management lane</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="grid two-up">
+  <div class="card">
+    <div class="card-header">
+      <h2>Tracked tasks</h2>
+      <p>Lightweight work queue captured directly from the dashboard.</p>
+    </div>
+    <div id="taskList" class="lane-list"></div>
+  </div>
+  <div class="card">
+    <div class="card-header">
+      <h2>Command state</h2>
+      <p>Persistent local dashboard memory for this app.</p>
+    </div>
+    <div class="lane-list">
+      <div class="lane"><strong id="messageCount">0</strong><span>Messages logged</span></div>
+      <div class="lane"><strong id="taskCount">0</strong><span>Tasks tracked</span></div>
+      <div class="lane"><strong id="lastUpdated">—</strong><span>Last updated</span></div>
     </div>
   </div>
 </section>

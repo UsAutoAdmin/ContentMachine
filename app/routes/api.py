@@ -18,6 +18,8 @@ from app.repositories.videos import (
     update_video,
 )
 from app.services.transcription import list_profile_reels, transcribe_reel
+from app.services.command_center import handle_command
+from app.repositories.command_state import get_state
 
 router = APIRouter()
 
@@ -140,6 +142,16 @@ async def bulk_transcribe(profile_url: str, model_size: str = "base"):
         yield send({"type": "done", "transcribed": transcribed_count, "message": f"Bulk transcription complete. {transcribed_count} new videos added."})
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.get("/api/command-state")
+async def api_command_state():
+    return get_state()
+
+
+@router.post("/api/command")
+async def api_command(data: dict):
+    return handle_command(data.get("message", ""))
 
 
 @router.post("/api/import")
